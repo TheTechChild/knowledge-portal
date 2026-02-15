@@ -10,16 +10,21 @@ if [ -f "$PROJECT_DIR/.env" ]; then
     set +a
 fi
 
-KNOWLEDGE_PATH="${KNOWLEDGE_PATH:-/mnt/user/knowledge}"
-LIBRARY_PATH="${LIBRARY_PATH:-$KNOWLEDGE_PATH/library}"
+if [ -d "/data" ]; then
+    LIBRARY_PATH="/data"
+    KNOWLEDGE_PATH="${KNOWLEDGE_PATH:-/mnt/user/knowledge}"
+    IN_CONTAINER=true
+else
+    KNOWLEDGE_PATH="${KNOWLEDGE_PATH:-/mnt/user/knowledge}"
+    LIBRARY_PATH="${LIBRARY_PATH:-$KNOWLEDGE_PATH/library}"
+    IN_CONTAINER=false
+fi
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
 check_dependencies() {
-    for cmd in wget docker; do
-        command -v "$cmd" >/dev/null 2>&1 || die "'$cmd' is required but not installed."
-    done
+    command -v wget >/dev/null 2>&1 || die "'wget' is required but not installed."
 }
 
 create_directory_structure() {
@@ -133,8 +138,13 @@ main() {
     log ""
 
     check_dependencies
-    create_directory_structure
-    migrate_wikipedia_from_old_path
+
+    if [ "$IN_CONTAINER" = false ]; then
+        create_directory_structure
+        migrate_wikipedia_from_old_path
+    else
+        mkdir -p "$LIBRARY_PATH"
+    fi
 
     local total=${#SOURCES[@]}
     local count=0

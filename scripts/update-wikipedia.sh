@@ -10,8 +10,15 @@ if [ -f "$PROJECT_DIR/.env" ]; then
     set +a
 fi
 
-KNOWLEDGE_PATH="${KNOWLEDGE_PATH:-/mnt/user/knowledge}"
-LIBRARY_PATH="${LIBRARY_PATH:-$KNOWLEDGE_PATH/library}"
+if [ -d "/data" ]; then
+    LIBRARY_PATH="/data"
+    IN_CONTAINER=true
+else
+    KNOWLEDGE_PATH="${KNOWLEDGE_PATH:-/mnt/user/knowledge}"
+    LIBRARY_PATH="${LIBRARY_PATH:-$KNOWLEDGE_PATH/library}"
+    IN_CONTAINER=false
+fi
+
 KEEP_OLD_ZIMS="${KEEP_OLD_ZIMS:-1}"
 LOG_FILE="${LOG_FILE:-$LIBRARY_PATH/update.log}"
 CONTAINER_NAME="${CONTAINER_NAME:-kiwix-wikipedia}"
@@ -133,10 +140,13 @@ main() {
         fi
     done
 
-    if [ "$needs_restart" = true ]; then
+    if [ "$needs_restart" = true ] && [ "$IN_CONTAINER" = false ]; then
         log ""
         log "Restarting kiwix container to load new content..."
         docker restart "$CONTAINER_NAME" 2>/dev/null || log "WARNING: Could not restart container '$CONTAINER_NAME'."
+    elif [ "$needs_restart" = true ]; then
+        log ""
+        log "New content downloaded. Restart the container to load it."
     fi
 
     log ""
