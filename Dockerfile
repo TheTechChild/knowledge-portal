@@ -1,6 +1,8 @@
 FROM ghcr.io/kiwix/kiwix-serve:latest@sha256:9bffd4f940645d4d518f137e87b7865d3d0ef30f6c13fbe4a3b9e747be3cd1ad
 
+USER root
 RUN apk add --no-cache bash grep
+USER nobody
 
 COPY --chmod=755 scripts/ /scripts/
 
