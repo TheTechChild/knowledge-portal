@@ -79,6 +79,7 @@ Both repos use GitHub Actions for CI/CD (build & push to GHCR on every push to `
 ```
 /mnt/user/knowledge/
 └── library/              # All .zim files live here (mounted as /data in containers)
+    ├── .staging/         # In-progress downloads (invisible to kiwix-serve glob)
     ├── wikipedia_en_all_maxi_2025-08.zim
     ├── wiktionary_en_all_nopic_2025-09.zim
     └── ...
