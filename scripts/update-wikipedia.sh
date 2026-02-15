@@ -11,51 +11,62 @@ if [ -f "$PROJECT_DIR/.env" ]; then
 fi
 
 KNOWLEDGE_PATH="${KNOWLEDGE_PATH:-/mnt/user/knowledge}"
-WIKIPEDIA_ZIM_VARIANT="${WIKIPEDIA_ZIM_VARIANT:-wikipedia_en_all_maxi}"
-KIWIX_DOWNLOAD_BASE="${KIWIX_DOWNLOAD_BASE:-https://download.kiwix.org/zim/wikipedia}"
+LIBRARY_PATH="${LIBRARY_PATH:-$KNOWLEDGE_PATH/library}"
 KEEP_OLD_ZIMS="${KEEP_OLD_ZIMS:-1}"
-LOG_FILE="${LOG_FILE:-$KNOWLEDGE_PATH/wikipedia/update.log}"
-COMPOSE_DIR="${COMPOSE_DIR:-$PROJECT_DIR}"
-CONTAINER_NAME="knowledge-kiwix"
+LOG_FILE="${LOG_FILE:-$LIBRARY_PATH/update.log}"
+CONTAINER_NAME="${CONTAINER_NAME:-kiwix-wikipedia}"
 
 log() {
     local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $*"
     echo "$msg" >&2
+    mkdir -p "$(dirname "$LOG_FILE")"
     echo "$msg" >> "$LOG_FILE"
 }
 
 die() { log "ERROR: $*"; exit 1; }
 
+SOURCES=(
+    "https://download.kiwix.org/zim/wikipedia|wikipedia_en_all_maxi|Wikipedia"
+    "https://download.kiwix.org/zim/wiktionary|wiktionary_en_all_nopic|Wiktionary"
+    "https://download.kiwix.org/zim/wikibooks|wikibooks_en_all_maxi|Wikibooks"
+    "https://download.kiwix.org/zim/wikiversity|wikiversity_en_all_maxi|Wikiversity"
+    "https://download.kiwix.org/zim/wikisource|wikisource_en_all_maxi|Wikisource"
+    "https://download.kiwix.org/zim/wikiquote|wikiquote_en_all_maxi|Wikiquote"
+    "https://download.kiwix.org/zim/wikivoyage|wikivoyage_en_all_maxi|Wikivoyage"
+    "https://download.kiwix.org/zim/gutenberg|gutenberg_en_all|Gutenberg"
+    "https://download.kiwix.org/zim/stack_exchange|stackoverflow.com_en_all|Stack Overflow"
+    "https://download.kiwix.org/zim/phet|phet_en_all|PhET"
+)
+
 find_latest_remote_zim() {
+    local base_url="$1"
+    local variant="$2"
+
     local listing
-    listing=$(wget -q -O - "$KIWIX_DOWNLOAD_BASE/") || die "Failed to fetch ZIM listing"
+    listing=$(wget -q -O - "$base_url/") || return 1
 
     echo "$listing" \
-        | grep -oP "href=\"\K${WIKIPEDIA_ZIM_VARIANT}_[0-9]{4}-[0-9]{2}\.zim(?=\")" \
+        | grep -oP "href=\"\K${variant}_[0-9]{4}-[0-9]{2}\.zim(?=\")" \
         | sort -V \
         | tail -1
 }
 
-get_current_zim() {
-    local link="$KNOWLEDGE_PATH/wikipedia/current.zim"
-    if [ -L "$link" ]; then
-        readlink "$link"
-    else
-        echo ""
-    fi
+get_local_version() {
+    local variant="$1"
+    ls -1 "$LIBRARY_PATH/${variant}_"*.zim 2>/dev/null | sort -V | tail -1 | xargs -r basename
 }
 
 download_zim() {
-    local filename="$1"
-    local url="$KIWIX_DOWNLOAD_BASE/$filename"
-    local dest="$KNOWLEDGE_PATH/wikipedia/$filename"
+    local base_url="$1"
+    local filename="$2"
+    local dest="$LIBRARY_PATH/$filename"
 
     if [ -f "$dest" ]; then
-        log "File already fully downloaded: $dest"
+        log "  Already downloaded."
         return 0
     fi
 
-    log "Downloading $filename..."
+    log "  Downloading $filename..."
     wget \
         --continue \
         --progress=dot:giga \
@@ -63,72 +74,73 @@ download_zim() {
         --tries=10 \
         --waitretry=30 \
         -O "$dest" \
-        "$url" || die "Download failed (will resume on next run)"
+        "$base_url/$filename" || { log "  WARNING: Download failed (will retry next run)."; rm -f "$dest"; return 1; }
 
-    log "Download complete: $dest"
+    log "  Download complete."
 }
 
-swap_and_restart() {
-    local new_file="$1"
-    local link="$KNOWLEDGE_PATH/wikipedia/current.zim"
-
-    log "Stopping kiwix container..."
-    docker stop "$CONTAINER_NAME" 2>/dev/null || true
-
-    ln -sf "$new_file" "$link"
-    log "Symlink updated: current.zim -> $new_file"
-
-    log "Starting kiwix container..."
-    docker start "$CONTAINER_NAME" 2>/dev/null \
-        || (cd "$COMPOSE_DIR" && docker compose up -d kiwix)
-
-    log "Kiwix restarted with new ZIM"
-}
-
-cleanup_old_zims() {
-    local current_file="$1"
+cleanup_old_versions() {
+    local variant="$1"
     local keep=$((KEEP_OLD_ZIMS + 1))
 
     local old_files
-    old_files=$(ls -1t "$KNOWLEDGE_PATH/wikipedia/${WIKIPEDIA_ZIM_VARIANT}_"*.zim 2>/dev/null \
-        | tail -n +$((keep + 1)))
+    old_files=$(ls -1t "$LIBRARY_PATH/${variant}_"*.zim 2>/dev/null | tail -n +$((keep + 1))) || true
 
     if [ -n "$old_files" ]; then
-        log "Cleaning up old ZIM files (keeping $KEEP_OLD_ZIMS + current)..."
         echo "$old_files" | while read -r f; do
-            log "  Removing: $(basename "$f")"
+            log "  Removing old: $(basename "$f")"
             rm -f "$f"
         done
     fi
 }
 
 main() {
-    log "=== Wikipedia Update Check ==="
+    log "=== Knowledge Library Update Check ==="
 
-    mkdir -p "$(dirname "$LOG_FILE")"
+    local updated=0
+    local total=${#SOURCES[@]}
+    local count=0
+    local needs_restart=false
 
-    local latest_remote
-    latest_remote=$(find_latest_remote_zim)
-    [ -n "$latest_remote" ] || die "Could not determine latest ZIM file"
+    for entry in "${SOURCES[@]}"; do
+        IFS='|' read -r base_url variant description <<< "$entry"
+        count=$((count + 1))
 
-    local current
-    current=$(get_current_zim)
+        log "[$count/$total] $description"
 
-    log "Remote latest: $latest_remote"
-    log "Local current: ${current:-<none>}"
+        local latest_remote
+        latest_remote=$(find_latest_remote_zim "$base_url" "$variant") || true
 
-    if [ "$latest_remote" = "$current" ]; then
-        log "Already up to date. Nothing to do."
-        exit 0
+        if [ -z "$latest_remote" ]; then
+            log "  Could not check remote — skipping."
+            continue
+        fi
+
+        local local_version
+        local_version=$(get_local_version "$variant")
+
+        if [ "$latest_remote" = "$local_version" ]; then
+            log "  Up to date: $local_version"
+            continue
+        fi
+
+        log "  Update available: ${local_version:-<none>} -> $latest_remote"
+
+        if download_zim "$base_url" "$latest_remote"; then
+            cleanup_old_versions "$variant"
+            updated=$((updated + 1))
+            needs_restart=true
+        fi
+    done
+
+    if [ "$needs_restart" = true ]; then
+        log ""
+        log "Restarting kiwix container to load new content..."
+        docker restart "$CONTAINER_NAME" 2>/dev/null || log "WARNING: Could not restart container '$CONTAINER_NAME'."
     fi
 
-    log "New version available!"
-
-    download_zim "$latest_remote"
-    swap_and_restart "$latest_remote"
-    cleanup_old_zims "$latest_remote"
-
-    log "=== Update complete: now serving $latest_remote ==="
+    log ""
+    log "=== Update complete: $updated sources updated ==="
 }
 
 main "$@"

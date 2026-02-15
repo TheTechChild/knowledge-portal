@@ -12,13 +12,12 @@
 
 services:
   kiwix:
-    image: ghcr.io/kiwix/kiwix-serve:latest
-    container_name: knowledge-kiwix
+    image: ghcr.io/thetechild/knowledge-portal:latest
+    container_name: kiwix-wikipedia
     ports:
-      - "${KIWIX_PORT:-8080}:8080"
+      - "${KIWIX_PORT:-8081}:8080"
     volumes:
-      - ${KNOWLEDGE_PATH:-/mnt/user/knowledge}/wikipedia:/data:ro
-    command: current.zim
+      - ${LIBRARY_PATH:-/mnt/user/knowledge/library}:/data:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:8080", "||", "exit", "1"]
@@ -27,5 +26,5 @@ services:
       retries: 3
       start_period: 30s
     labels:
-      - "knowledge-portal.service=wikipedia"
-      - "knowledge-portal.description=Offline Wikipedia via Kiwix"
+      - "knowledge-portal.service=kiwix"
+      - "knowledge-portal.description=Offline knowledge library via Kiwix"

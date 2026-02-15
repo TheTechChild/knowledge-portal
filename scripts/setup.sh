@@ -11,8 +11,7 @@ if [ -f "$PROJECT_DIR/.env" ]; then
 fi
 
 KNOWLEDGE_PATH="${KNOWLEDGE_PATH:-/mnt/user/knowledge}"
-WIKIPEDIA_ZIM_VARIANT="${WIKIPEDIA_ZIM_VARIANT:-wikipedia_en_all_maxi}"
-KIWIX_DOWNLOAD_BASE="${KIWIX_DOWNLOAD_BASE:-https://download.kiwix.org/zim/wikipedia}"
+LIBRARY_PATH="${LIBRARY_PATH:-$KNOWLEDGE_PATH/library}"
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
@@ -27,7 +26,7 @@ create_directory_structure() {
     log "Creating knowledge share directory structure..."
 
     local dirs=(
-        "$KNOWLEDGE_PATH/wikipedia"
+        "$LIBRARY_PATH"
         "$KNOWLEDGE_PATH/texts/mathematics"
         "$KNOWLEDGE_PATH/texts/sciences/physics"
         "$KNOWLEDGE_PATH/texts/sciences/chemistry"
@@ -59,40 +58,32 @@ create_directory_structure() {
         mkdir -p "$dir"
     done
 
-    log "Directory structure created at $KNOWLEDGE_PATH"
+    log "Directory structure created."
 }
 
 find_latest_zim() {
-    log "Querying $KIWIX_DOWNLOAD_BASE for latest $WIKIPEDIA_ZIM_VARIANT..."
+    local base_url="$1"
+    local variant="$2"
 
     local listing
-    listing=$(wget -q -O - "$KIWIX_DOWNLOAD_BASE/") || die "Failed to fetch ZIM listing from $KIWIX_DOWNLOAD_BASE"
+    listing=$(wget -q -O - "$base_url/") || return 1
 
-    local latest
-    latest=$(echo "$listing" \
-        | grep -oP "href=\"\K${WIKIPEDIA_ZIM_VARIANT}_[0-9]{4}-[0-9]{2}\.zim(?=\")" \
+    echo "$listing" \
+        | grep -oP "href=\"\K${variant}_[0-9]{4}-[0-9]{2}\.zim(?=\")" \
         | sort -V \
-        | tail -1)
-
-    [ -n "$latest" ] || die "No ZIM file matching '$WIKIPEDIA_ZIM_VARIANT' found at $KIWIX_DOWNLOAD_BASE"
-
-    echo "$latest"
+        | tail -1
 }
 
 download_zim() {
-    local filename="$1"
-    local url="$KIWIX_DOWNLOAD_BASE/$filename"
-    local dest="$KNOWLEDGE_PATH/wikipedia/$filename"
+    local base_url="$1"
+    local filename="$2"
+    local url="$base_url/$filename"
+    local dest="$LIBRARY_PATH/$filename"
 
     if [ -f "$dest" ]; then
-        log "ZIM file already exists at $dest — skipping download."
+        log "  Already exists — skipping."
         return 0
     fi
-
-    log "Downloading $filename (~100GB for maxi variant, this will take a while)..."
-    log "URL: $url"
-    log "Destination: $dest"
-    log "wget will resume automatically if interrupted. Re-run this script to continue."
 
     wget \
         --continue \
@@ -101,43 +92,90 @@ download_zim() {
         --tries=10 \
         --waitretry=30 \
         -O "$dest" \
-        "$url" || die "Download failed. Re-run this script to resume."
+        "$url" || { log "  WARNING: Download failed. Will retry on next run."; rm -f "$dest"; return 1; }
 
-    log "Download complete: $dest"
+    log "  Download complete."
 }
 
-create_symlink() {
-    local filename="$1"
-    local link="$KNOWLEDGE_PATH/wikipedia/current.zim"
-
-    ln -sf "$filename" "$link"
-    log "Symlink updated: current.zim -> $filename"
+migrate_wikipedia_from_old_path() {
+    local old_dir="$KNOWLEDGE_PATH/wikipedia"
+    if [ -d "$old_dir" ] && ls "$old_dir"/*.zim 1>/dev/null 2>&1; then
+        log "Migrating ZIM files from wikipedia/ to library/..."
+        for f in "$old_dir"/*.zim; do
+            [ -L "$f" ] && continue
+            local base
+            base=$(basename "$f")
+            if [ ! -f "$LIBRARY_PATH/$base" ]; then
+                mv "$f" "$LIBRARY_PATH/$base"
+                log "  Moved: $base"
+            fi
+        done
+        rm -f "$old_dir/current.zim"
+        log "Migration complete."
+    fi
 }
+
+SOURCES=(
+    "https://download.kiwix.org/zim/wikipedia|wikipedia_en_all_maxi|Wikipedia|~100GB"
+    "https://download.kiwix.org/zim/wiktionary|wiktionary_en_all_nopic|Wiktionary (dictionary)|~8GB"
+    "https://download.kiwix.org/zim/wikibooks|wikibooks_en_all_maxi|Wikibooks (textbooks)|~5GB"
+    "https://download.kiwix.org/zim/wikiversity|wikiversity_en_all_maxi|Wikiversity (courses)|~2GB"
+    "https://download.kiwix.org/zim/wikisource|wikisource_en_all_maxi|Wikisource (texts)|~18GB"
+    "https://download.kiwix.org/zim/wikiquote|wikiquote_en_all_maxi|Wikiquote|~900MB"
+    "https://download.kiwix.org/zim/wikivoyage|wikivoyage_en_all_maxi|Wikivoyage (travel)|~1GB"
+    "https://download.kiwix.org/zim/gutenberg|gutenberg_en_all|Project Gutenberg (60k+ books)|~206GB"
+    "https://download.kiwix.org/zim/stack_exchange|stackoverflow.com_en_all|Stack Overflow|~15GB"
+    "https://download.kiwix.org/zim/phet|phet_en_all|PhET (science simulations)|~100MB"
+)
 
 main() {
     log "=== Knowledge Portal Setup ==="
+    log ""
 
     check_dependencies
     create_directory_structure
+    migrate_wikipedia_from_old_path
 
-    local latest_zim
-    latest_zim=$(find_latest_zim)
-    log "Latest ZIM: $latest_zim"
+    local total=${#SOURCES[@]}
+    local count=0
+    local downloaded=0
+    local skipped=0
+    local failed=0
 
-    download_zim "$latest_zim"
-    create_symlink "$latest_zim"
+    for entry in "${SOURCES[@]}"; do
+        IFS='|' read -r base_url variant description size <<< "$entry"
+        count=$((count + 1))
+
+        log "[$count/$total] $description ($size)"
+
+        local latest
+        latest=$(find_latest_zim "$base_url" "$variant") || true
+
+        if [ -z "$latest" ]; then
+            log "  No ZIM found matching '$variant' — skipping."
+            failed=$((failed + 1))
+            continue
+        fi
+
+        log "  Latest: $latest"
+
+        if [ -f "$LIBRARY_PATH/$latest" ]; then
+            log "  Already exists — skipping."
+            skipped=$((skipped + 1))
+            continue
+        fi
+
+        download_zim "$base_url" "$latest" && downloaded=$((downloaded + 1)) || failed=$((failed + 1))
+    done
 
     log ""
     log "=== Setup complete ==="
-    log "ZIM file: $KNOWLEDGE_PATH/wikipedia/$latest_zim"
+    log "  Downloaded: $downloaded"
+    log "  Already had: $skipped"
+    log "  Failed: $failed"
+    log "  Library: $LIBRARY_PATH"
     log ""
-    log "Next steps:"
-    log "  1. cd $PROJECT_DIR"
-    log "  2. docker compose up -d"
-    log "  3. Open http://<your-nas-ip>:${KIWIX_PORT:-8080}"
-    log ""
-    log "To enable weekly auto-updates, add scripts/update-wikipedia.sh"
-    log "to Unraid's User Scripts plugin with a weekly schedule."
+    log "Restart the kiwix container to pick up new books."
 }
 
 main "$@"
