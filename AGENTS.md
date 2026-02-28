@@ -69,3 +69,4 @@ docker restart kiwix-wikipedia
 - **Min free space** — Keep 50GB free on Unraid share for staging downloads
 - **Healthcheck uses wget** — Requires wget in container (present in kiwix-serve image)
 - **Future expansion** — Planned: Calibre, Ollama, vector DB, unified frontend, lecture integration
+
